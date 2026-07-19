@@ -1,0 +1,14 @@
+```text
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data & Models (Keep these local)
+data/
+outputs/models/*.pkl
+
+# Virtual Environments
+venv/
+env/
+.env

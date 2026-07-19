@@ -1,0 +1,6 @@
+Endpoint,Task,ROC-AUC,AUPRC,Accuracy,RMSE,R2
+BBB_Penetration,Classification,0.905,0.948,0.872,,
+CYP3A4_Inhibition,Classification,0.883,0.84,,,
+hERG_Cardiotox,Classification,0.862,0.954,,,
+Aqueous_Solubility,Regression,,,,1.19,0.698
+Half_Life,Regression,,,,20.75,-0.036

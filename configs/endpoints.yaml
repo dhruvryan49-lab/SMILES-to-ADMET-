@@ -1,0 +1,128 @@
+# configs/project_config.yaml
+
+global:
+  random_seed: 42
+  output_dir: "outputs/"
+  n_jobs: -1
+
+features:
+  smiles_column: "Drug"
+  method: "morgan_plus_descriptors"
+  morgan_radius: 2
+  morgan_nbits: 2048
+
+models:
+  xgb_classifier_baseline:
+    algorithm: "xgboost"
+    hyperparameters:
+      n_estimators: 150
+      max_depth: 6
+      learning_rate: 0.1
+  xgb_regressor_baseline:
+    algorithm: "xgboost"
+    hyperparameters:
+      n_estimators: 150
+      max_depth: 6
+      learning_rate: 0.1
+  rf_classifier_experiment:
+    algorithm: "random_forest"
+    hyperparameters:
+      n_estimators: 200
+      max_depth: null
+  gnn_future_placeholder:
+    algorithm: "graph_neural_network"
+    hyperparameters:
+      hidden_dim: 128
+      layers: 4
+
+endpoints:
+  BBB_Penetration:
+    task_type: "classification"
+    data:
+      provider: "TDC"
+      category: "ADME"
+      dataset_name: "BBB_Martins"
+      target_column: "Y"
+    split:
+      method: "scaffold"
+      train_frac: 0.8
+      val_frac: 0.1
+      test_frac: 0.1
+    evaluation:
+      metrics:
+        - "roc_auc"
+        - "auprc"
+        - "accuracy"
+    active_model: "xgb_classifier_baseline"
+
+  CYP3A4_Inhibition:
+    task_type: "classification"
+    data:
+      provider: "TDC"
+      category: "ADME"
+      dataset_name: "CYP3A4_Veith"
+      target_column: "Y"
+    split:
+      method: "scaffold"
+      train_frac: 0.8
+      val_frac: 0.1
+      test_frac: 0.1
+    evaluation:
+      metrics:
+        - "roc_auc"
+        - "auprc"
+    active_model: "xgb_classifier_baseline"
+
+  hERG_Cardiotox:
+    task_type: "classification"
+    data:
+      provider: "TDC"
+      category: "Tox"
+      dataset_name: "hERG"
+      target_column: "Y"
+    split:
+      method: "scaffold"
+      train_frac: 0.8
+      val_frac: 0.1
+      test_frac: 0.1
+    evaluation:
+      metrics:
+        - "roc_auc"
+        - "auprc"
+    active_model: "xgb_classifier_baseline"
+
+  Aqueous_Solubility:
+    task_type: "regression"
+    data:
+      provider: "TDC"
+      category: "ADME"
+      dataset_name: "Solubility_AqSolDB"
+      target_column: "Y"
+    split:
+      method: "scaffold"
+      train_frac: 0.8
+      val_frac: 0.1
+      test_frac: 0.1
+    evaluation:
+      metrics:
+        - "rmse"
+        - "r2"
+    active_model: "xgb_regressor_baseline"
+
+  Half_Life:
+    task_type: "regression"
+    data:
+      provider: "TDC"
+      category: "ADME"
+      dataset_name: "Half_Life_Obach"
+      target_column: "Y"
+    split:
+      method: "scaffold"
+      train_frac: 0.8
+      val_frac: 0.1
+      test_frac: 0.1
+    evaluation:
+      metrics:
+        - "rmse"
+        - "r2"
+    active_model: "xgb_regressor_baseline"
