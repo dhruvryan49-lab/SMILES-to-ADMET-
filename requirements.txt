@@ -1,18 +1,16 @@
-# Deep Learning & Graph Neural Networks
-torch
-torch-geometric
-
-# Cheminformatics & Molecular Processing
-rdkit
-PyTDC
-
-# Classical ML & Optimization
+gradio
 xgboost
-optuna
-scikit-learn
-
-# Data Processing & Utilities
+rdkit
 pandas
 numpy
-tqdm
+matplotlib
 requests
+python-dotenv
+pyyaml
+joblib
+
+# GNN Stack (PyTorch Geometric)
+torch
+torch_geometric
+# Note: For torch_geometric, you may need additional specific 
+# dependencies depending on your OS/CUDA version.

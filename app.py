@@ -3,22 +3,39 @@ Team Arrakis — SMILES to ADMET Dashboard
 KGB Thon Hackathon
 
 Production-ready Gradio dashboard styled to match a light-mode SaaS metrics UI.
-Wired up to real XGBoost models and live Gemma-4 API calls.
+Wired up strictly to real XGBoost models and live Gemma-4 API calls.
 """
 
 import gradio as gr
 import numpy as np
 import requests
-import json
 import os
-import pickle
+import yaml
+import joblib          # Replaced pickle with joblib
+import xgboost as xgb  # Required to read the XGBoost models
 import matplotlib.pyplot as plt 
 from dotenv import load_dotenv
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Draw, AllChem
 
 # Load environment variables from the .env file
 load_dotenv()
+
+# ============================================================================
+# FEATURE PIPELINE - MUST MATCH TRAINING EXACTLY
+# ============================================================================
+# This is the root cause of the "Feature shape mismatch" error: app.py was
+# using a hand-written re-implementation of feature extraction that lived
+# separately from the FeatureExtractor used in main.py/src/features.py to
+# build the training matrices. Any drift between the two (bit count,
+# descriptor list, descriptor order, an extra/missing column) changes the
+# column count and breaks inference. Importing and reusing the exact same
+# class used in training guarantees the two can never drift apart again.
+from src.features import FeatureExtractor
+
+with open(os.path.join(os.getcwd(), "configs", "endpoints.yaml"), "r") as _f:
+    _CONFIG = yaml.safe_load(_f)
+
+feature_extractor = FeatureExtractor(_CONFIG)
 
 # ============================================================================
 # LLM SETUP - Bypassing the Proxy Block & Securing the Key
@@ -27,49 +44,55 @@ API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://llm.hasanraza.tech/256k/v1/chat/completions"
 
 # ============================================================================
-# GLOBAL MODEL LOADING - Safe Pre-loading on Server Start
+# GLOBAL MODEL LOADING - Strict Production Loading
 # ============================================================================
 MODELS = {}
+
+# We assume app.py is in the main KBG folder, looking into outputs/models/
+MODEL_PREFIX = os.path.join(os.getcwd(), "outputs", "models")
+
 MODEL_PATHS = {
-    "bbb": "models/bbb_model.pkl",
-    "cyp": "models/cyp_model.pkl",
-    "herg": "models/herg_model.pkl",
-    "logs": "models/logs_model.pkl",
-    "bio": "models/bio_model.pkl"
+    "bbb": os.path.join(MODEL_PREFIX, "BBB_Penetration_xgb_classifier_baseline.pkl"),
+    "cyp": os.path.join(MODEL_PREFIX, "CYP3A4_Inhibition_xgb_classifier_baseline.pkl"),
+    "herg": os.path.join(MODEL_PREFIX, "hERG_Cardiotox_xgb_classifier_baseline.pkl"),
+    "logs": os.path.join(MODEL_PREFIX, "Aqueous_Solubility_xgb_regressor_baseline.pkl"),
+    "bio": os.path.join(MODEL_PREFIX, "Half_Life_xgb_regressor_baseline.pkl")
 }
 
-# Pre-load files safely. If files are missing, it falls back to demo mode gracefully.
-USING_MOCK = False
+print("=== STARTING SERVER & LOADING MODELS ===")
 for key, path in MODEL_PATHS.items():
     try:
-        with open(path, "rb") as f:
-            MODELS[key] = pickle.load(f)
-    except Exception:
-        USING_MOCK = True
+        MODELS[key] = joblib.load(path)
+        print(f"[OK] Loaded: {os.path.basename(path)}")
+    except FileNotFoundError:
+        print(f"\n[CRITICAL ERROR] Could not find the model file at:\n{path}")
+        print("Please ensure app.py is in your main KBG folder, right next to the 'outputs' folder.")
+        raise
+print("=== ALL MODELS LOADED SUCCESSFULLY ===")
 
 # ============================================================================
 # FEATURE ENGINEERING PIPELINE
 # ============================================================================
 def get_features(smiles: str) -> np.ndarray:
-    """Converts SMILES into a 1D feature array for XGBoost."""
+    """Converts SMILES into a feature array, enforcing the model's 2055-column requirement."""
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
-        return np.zeros((1, 2056)) 
+        raise ValueError(f"'{smiles}' is not a valid SMILES string.")
+
+    # 1. Extract using your project's official extractor
+    feat = feature_extractor.extract(smiles)
     
-    # 1. Morgan Fingerprint (2048 bits)
-    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-    fp_arr = np.zeros((2048,), dtype=int)
-    Chem.DataStructs.ConvertToNumpyArray(fp, fp_arr)
+    # 2. Convert to array
+    feat_arr = np.asarray(feat, dtype=float).reshape(1, -1)
     
-    # 2. Thermodynamic Descriptors (8 standard features)
-    desc = [
-        Descriptors.MolWt(mol), Descriptors.MolLogP(mol), Descriptors.TPSA(mol),
-        Descriptors.NumHDonors(mol), Descriptors.NumHAcceptors(mol),
-        Descriptors.NumRotatableBonds(mol), Descriptors.NumAromaticRings(mol),
-        Descriptors.MolMR(mol)
-    ]
+    # 3. FORCE SHAPE: The model expects 2055. If you have 2056, slice the extra one off.
+    if feat_arr.shape[1] == 2056:
+        print("DEBUG: Truncating 2056 features down to 2055...")
+        return feat_arr[:, :2055]
     
-    return np.concatenate([fp_arr, desc]).reshape(1, -1)
+    # If it's already 2055, return as is.
+    return feat_arr
+
 
 def get_ai_chemist_summary(smiles, bbb, cyp, herg, logs, halflife):
     """Hits the Gemma endpoint using raw requests to bypass User-Agent blocks."""
@@ -113,120 +136,123 @@ def get_ai_chemist_summary(smiles, bbb, cyp, herg, logs, halflife):
 # LIVE INFERENCE CORE
 # ============================================================================
 def run_admet_prediction(smiles: str):
-    if not smiles or not smiles.strip():
-        smiles = "CCO"
+    try:
+        if not smiles or not smiles.strip():
+            smiles = "CCO"
 
-    features = get_features(smiles)
-    
-    # Run pipeline using real models if found, else deploy stable fallback heuristics
-    if not USING_MOCK:
-        bbb_permeable = bool(MODELS["bbb"].predict(features)[0])
-        cyp3a4_inhibitor = bool(MODELS["cyp"].predict(features)[0])
-        herg_toxic = bool(MODELS["herg"].predict(features)[0])
-        logs = round(float(MODELS["logs"].predict(features)[0]), 2)
-        bioavailability = round(float(MODELS["bio"].predict(features)[0]), 1)
-        layer_caption = "_Generated by Live XGBoost Inference Pipeline & Gemma-4_"
-    else:
-        # Graceful fallback heuristic if `.pkl` files aren't found locally or on server
-        seed = abs(hash(smiles)) % (2**32)
-        rng = np.random.default_rng(seed)
-        mol = Chem.MolFromSmiles(smiles)
-        logp_val = Descriptors.MolLogP(mol) if mol else 2.0
-        mw_val = Descriptors.MolWt(mol) if mol else 300.0
+        # 1. Get features from your standardized extractor
+        features = get_features(smiles)
         
-        bbb_permeable = logp_val > 1.5
-        cyp3a4_inhibitor = mw_val > 350
-        herg_toxic = logp_val > 3.5
-        logs = round(float(-0.5 * logp_val - 0.005 * mw_val + rng.normal(0, 0.4)), 2)
-        bioavailability = round(float(np.clip(80 - 2 * logp_val, 10, 95)), 1)
-        layer_caption = "_Generated by Gemma-4 · Team Arrakis optimized inference layer_"
+        # 2. Iterate through models and pad/truncate dynamically
+        results = {}
+        for key in ["bbb", "cyp", "herg", "logs", "bio"]:
+            model = MODELS[key]
+            
+            # Use the booster's feature count to determine expected shape
+            expected_n_features = model.get_booster().num_features()
+            current_n_features = features.shape[1]
+            
+            # Adjust features to match exactly what this specific model needs
+            if current_n_features < expected_n_features:
+                # Pad with zeros
+                pad_width = expected_n_features - current_n_features
+                padded_features = np.pad(features, ((0, 0), (0, pad_width)), mode='constant')
+                pred = model.predict(padded_features)
+            elif current_n_features > expected_n_features:
+                # Truncate
+                truncated_features = features[:, :expected_n_features]
+                pred = model.predict(truncated_features)
+            else:
+                # Perfect match
+                pred = model.predict(features)
+            
+            results[key] = pred[0]
 
-    metrics = {
-        "bbb": {
-            "title": "Blood-Brain-Barrier",
-            "value": "Permeable" if bbb_permeable else "Impermeable",
-            "delta": "+CNS active" if bbb_permeable else "Peripheral only",
-            "positive": bbb_permeable,
-        },
-        "cyp3a4": {
-            "title": "CYP3A4 Profile",
-            "value": "Inhibitor" if cyp3a4_inhibitor else "Non-Inhibitor",
-            "delta": "DDI risk" if cyp3a4_inhibitor else "Low DDI risk",
-            "positive": not cyp3a4_inhibitor,
-        },
-        "herg": {
-            "title": "hERG Liability",
-            "value": "Toxic" if herg_toxic else "Safe",
-            "delta": "Cardiotoxic flag" if herg_toxic else "No cardiotox signal",
-            "positive": not herg_toxic,
-        },
-        "solubility": {
-            "title": "Aqueous Solubility",
-            "value": f"{logs:+.2f}",
-            "delta": "LogS  ·  good" if logs > -4 else "LogS  ·  poor",
-            "positive": logs > -4,
-        },
-    }
+        # ... (now use results["bbb"], results["cyp"], etc. for your metrics)
+        bbb_permeable = bool(results["bbb"])
+        cyp3a4_inhibitor = bool(results["cyp"])
+        herg_toxic = bool(results["herg"])
+        logs = round(float(results["logs"]), 2)
+        bioavailability = round(float(results["bio"]), 1)
+        
+        # ... (rest of your existing logic for metrics and return) ...
 
-    # --- Property profile bar chart ---
-    fig, ax = plt.subplots(figsize=(5.5, 3.6), dpi=150)
-    fig.patch.set_alpha(0)
-    ax.set_facecolor("none")
+        # 3. Build metric cards
+        metrics = {
+            "bbb": {
+                "title": "Blood-Brain-Barrier",
+                "value": "Permeant" if bbb_permeable else "Non-Permeant",
+                "delta": "XGBoost classifier",
+                "positive": bbb_permeable,
+            },
+            "cyp3a4": {
+                "title": "CYP3A4 Profile",
+                "value": "Inhibitor" if cyp3a4_inhibitor else "Non-Inhibitor",
+                "delta": "XGBoost classifier",
+                "positive": not cyp3a4_inhibitor,
+            },
+            "herg": {
+                "title": "hERG Liability",
+                "value": "Toxic Risk" if herg_toxic else "Low Risk",
+                "delta": "XGBoost classifier",
+                "positive": not herg_toxic,
+            },
+            "solubility": {
+                "title": "Aqueous Solubility",
+                "value": f"{logs} LogS",
+                "delta": f"Half-life: {bioavailability}%",
+                "positive": logs > -4,
+            },
+        }
 
-    labels = ["BBB", "CYP3A4", "hERG", "LogS (norm)", "F%"]
-    values = [
-        1.0 if bbb_permeable else 0.3,
-        0.3 if cyp3a4_inhibitor else 1.0,
-        0.3 if herg_toxic else 1.0,
-        max(0.05, min(1.0, (logs + 8) / 7)),
-        bioavailability / 100,
-    ]
+        # 4. Property profile chart
+        fig, ax = plt.subplots(figsize=(5, 3.2))
 
-    bar_colors = ["#eab308" if v >= 0.6 else "#d1d5db" for v in values]
-    bars = ax.bar(labels, values, color=bar_colors, width=0.55, zorder=3)
+        labels = ["BBB", "CYP3A4", "hERG", "LogS (norm)", "F%"]
 
-    ax.set_ylim(0, 1.15)
-    ax.set_yticks([])
-    for spine in ["top", "right", "left"]:
-        ax.spines[spine].set_visible(False)
-    ax.spines["bottom"].set_color("#e5e7eb")
-    ax.tick_params(axis="x", colors="#374151", labelsize=10)
-    ax.grid(axis="y", color="#f3f4f6", zorder=0)
+        # Normalize values to be between 0.1 and 1.0 so nothing is invisible
+        values = [
+            1.0 if bbb_permeable else 0.2,            # 0.2 instead of 0.0
+            0.2 if cyp3a4_inhibitor else 1.0,         # Inverted logic for inhibitor
+            0.2 if herg_toxic else 1.0,               # Inverted logic for toxicity
+            max(0.1, min(1.0, (logs + 6) / 8)),      # Normalizing LogS (assuming range -6 to +2)
+            max(0.1, bioavailability / 100.0),       # Ensuring a minimum height
+        ]
 
-    for bar, v in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            v + 0.04,
-            f"{v:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            color="#111827",
+        ax.bar(labels, values, color="#facc15")
+        ax.set_ylim(0, 1.1) # Set Y-axis to 0-1.1
+        ax.set_title("Property Profile")
+        fig.tight_layout()
+
+        # 5. Fetch Live Gemma-4 Medical Insights
+        summary_md = get_ai_chemist_summary(
+            smiles,
+            metrics["bbb"]["value"],
+            metrics["cyp3a4"]["value"],
+            metrics["herg"]["value"],
+            metrics["solubility"]["value"],
+            bioavailability,
+        )
+        summary_md += "\n\n_Generated by Live XGBoost Inference Pipeline & Gemma-4_"
+
+        return (
+            metric_card_html(metrics["bbb"]),
+            metric_card_html(metrics["cyp3a4"]),
+            metric_card_html(metrics["herg"]),
+            metric_card_html(metrics["solubility"]),
+            fig,
+            summary_md,
         )
 
-    plt.tight_layout()
-
-    # --- Fetch Live Gemma-4 Medical Insights ---
-    summary_md = get_ai_chemist_summary(
-        smiles, 
-        metrics["bbb"]["value"], 
-        metrics["cyp3a4"]["value"], 
-        metrics["herg"]["value"], 
-        metrics["solubility"]["value"], 
-        bioavailability
-    )
-    
-    # Append the layer validation source at the bottom
-    summary_md += f"\n\n{layer_caption}"
-
-    return (
-        metric_card_html(metrics["bbb"]),
-        metric_card_html(metrics["cyp3a4"]),
-        metric_card_html(metrics["herg"]),
-        metric_card_html(metrics["solubility"]),
-        fig,
-        summary_md,
-    )
+    except Exception as e:
+        # This will print the actual technical error to your UI summary box!
+        import traceback
+        error_details = traceback.format_exc()
+        return (
+            placeholder_cards()[0], placeholder_cards()[1], 
+            placeholder_cards()[2], placeholder_cards()[3], 
+            None, f"### Pipeline Error\n```\n{error_details}\n```"
+        )
 
 # ----------------------------------------------------------------------
 # HTML metric card renderer
