@@ -9,9 +9,7 @@ data/
 
 
 
-# Ignore plots and large result logs
-outputs/plots/
-outputs/results/
+
 
 # ==========================================
 # Python & Cache
