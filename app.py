@@ -430,4 +430,4 @@ with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Base(), title="Arrakis · ADMET D
     demo.load(fn=None, inputs=None, outputs=None, js=FORCE_LIGHT_JS)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
