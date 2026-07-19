@@ -1,0 +1,372 @@
+"""
+Team Arrakis — SMILES to ADMET Dashboard
+KGB Thon Hackathon
+
+Gradio dashboard styled to match a light-mode SaaS metrics UI.
+Backend calls are mocked with random data so the UI can be tested
+independently of the XGBoost / Gemma-4 pipeline.
+"""
+
+import random
+import gradio as gr
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+
+# ----------------------------------------------------------------------
+# Mock backend
+# ----------------------------------------------------------------------
+
+def run_admet_prediction(smiles: str):
+    """
+    Placeholder for the real pipeline:
+        1. Parse SMILES -> RDKit mol -> features
+        2. Run 5x XGBoost models -> ADMET properties
+        3. Run Gemma-4 -> natural language summary
+
+    Returns mock values so the front-end can be wired up immediately.
+    """
+    if not smiles or not smiles.strip():
+        smiles = "CCO"  # fallback so the demo never breaks
+
+    # --- mock ADMET properties -----------------------------------------
+    bbb_permeable = random.random() > 0.5
+    cyp3a4_inhibitor = random.random() > 0.5
+    herg_toxic = random.random() > 0.5
+    logs = round(random.uniform(-8.0, -1.0), 2)
+    bioavailability = round(random.uniform(10, 95), 1)
+
+    metrics = {
+        "bbb": {
+            "title": "Blood-Brain-Barrier",
+            "value": "Permeable" if bbb_permeable else "Impermeable",
+            "delta": "+CNS active" if bbb_permeable else "Peripheral only",
+            "positive": bbb_permeable,
+        },
+        "cyp3a4": {
+            "title": "CYP3A4 Profile",
+            "value": "Inhibitor" if cyp3a4_inhibitor else "Non-Inhibitor",
+            "delta": "DDI risk" if cyp3a4_inhibitor else "Low DDI risk",
+            "positive": not cyp3a4_inhibitor,
+        },
+        "herg": {
+            "title": "hERG Liability",
+            "value": "Toxic" if herg_toxic else "Safe",
+            "delta": "Cardiotoxic flag" if herg_toxic else "No cardiotox signal",
+            "positive": not herg_toxic,
+        },
+        "solubility": {
+            "title": "Aqueous Solubility",
+            "value": f"{logs:+.2f}",
+            "delta": "LogS  ·  good" if logs > -4 else "LogS  ·  poor",
+            "positive": logs > -4,
+        },
+    }
+
+    # --- mock chart: simple property radar-ish bar chart ----------------
+    fig, ax = plt.subplots(figsize=(5.5, 3.6), dpi=150)
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
+
+    labels = ["BBB", "CYP3A4", "hERG", "LogS (norm)", "F%"]
+    values = [
+        1.0 if bbb_permeable else 0.3,
+        0.3 if cyp3a4_inhibitor else 1.0,
+        0.3 if herg_toxic else 1.0,
+        max(0.05, min(1.0, (logs + 8) / 7)),
+        bioavailability / 100,
+    ]
+
+    bar_colors = ["#eab308" if v >= 0.6 else "#d1d5db" for v in values]
+    bars = ax.bar(labels, values, color=bar_colors, width=0.55, zorder=3)
+
+    ax.set_ylim(0, 1.15)
+    ax.set_yticks([])
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#e5e7eb")
+    ax.tick_params(axis="x", colors="#374151", labelsize=10)
+    ax.grid(axis="y", color="#f3f4f6", zorder=0)
+
+    for bar, v in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            v + 0.04,
+            f"{v:.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#111827",
+        )
+
+    plt.tight_layout()
+
+    # --- mock Gemma-4 summary -------------------------------------------
+    summary_lines = [
+        f"**Molecule:** `{smiles}`",
+        "",
+        f"This compound is predicted to be **{'BBB-permeable' if bbb_permeable else 'BBB-impermeable'}**, "
+        f"suggesting {'potential CNS activity — consider off-target neurological effects.' if bbb_permeable else 'primarily peripheral action, favorable for reducing CNS side-effect risk.'}",
+        "",
+        f"It is classified as a **{'CYP3A4 inhibitor' if cyp3a4_inhibitor else 'CYP3A4 non-inhibitor'}**, "
+        f"{'flagging a moderate drug-drug interaction risk with co-administered CYP3A4 substrates.' if cyp3a4_inhibitor else 'indicating a lower likelihood of metabolic drug-drug interactions.'}",
+        "",
+        f"hERG liability is predicted as **{'toxic' if herg_toxic else 'safe'}** "
+        f"({'cardiotoxicity screening recommended before progressing this scaffold.' if herg_toxic else 'no major cardiotoxicity signal detected at this stage.'})",
+        "",
+        f"Aqueous solubility (LogS) is estimated at **{logs:+.2f}**, "
+        f"{'within an acceptable formulation range.' if logs > -4 else 'indicating poor solubility — formulation strategies (e.g. salt forms, nanoparticles) may be required.'}",
+        "",
+        f"Predicted oral bioavailability: **{bioavailability:.1f}%**.",
+        "",
+        "_Generated by Gemma-4 · Team Arrakis mock inference layer_",
+    ]
+    summary_md = "\n".join(summary_lines)
+
+    return (
+        metric_card_html(metrics["bbb"]),
+        metric_card_html(metrics["cyp3a4"]),
+        metric_card_html(metrics["herg"]),
+        metric_card_html(metrics["solubility"]),
+        fig,
+        summary_md,
+    )
+
+
+# ----------------------------------------------------------------------
+# HTML metric card renderer
+# ----------------------------------------------------------------------
+
+def metric_card_html(metric: dict) -> str:
+    pill_class = "pill-pos" if metric["positive"] else "pill-neg"
+    return f"""
+    <div class="metric-card">
+        <div class="metric-title">{metric['title']}</div>
+        <div class="metric-value-row">
+            <span class="metric-value">{metric['value']}</span>
+        </div>
+        <div class="metric-footer">
+            <span class="pill {pill_class}">{metric['delta']}</span>
+        </div>
+    </div>
+    """
+
+
+def placeholder_cards():
+    placeholders = [
+        {"title": "Blood-Brain-Barrier", "value": "—", "delta": "awaiting run", "positive": True},
+        {"title": "CYP3A4 Profile", "value": "—", "delta": "awaiting run", "positive": True},
+        {"title": "hERG Liability", "value": "—", "delta": "awaiting run", "positive": True},
+        {"title": "Aqueous Solubility", "value": "—", "delta": "awaiting run", "positive": True},
+    ]
+    return [metric_card_html(p) for p in placeholders]
+
+
+# ----------------------------------------------------------------------
+# CSS — light-mode SaaS dashboard aesthetic
+# ----------------------------------------------------------------------
+
+CUSTOM_CSS = """
+/* ---- Force light mode, everywhere, always ---- */
+html, body, .gradio-container, gradio-app, .dark, .dark body, .dark .gradio-container {
+    background-color: #f3f6f8 !important;
+    color: #111827 !important;
+}
+.dark { color-scheme: light !important; }
+
+gradio-app::before { content: none !important; }
+
+* {
+    color-scheme: light !important;
+}
+
+.gradio-container {
+    max-width: 1280px !important;
+    margin: 0 auto !important;
+    font-family: 'Inter', 'Roboto', system-ui, -apple-system, sans-serif !important;
+}
+
+/* Kill Gradio's dark-mode component backgrounds */
+.dark .block, .dark .form, .dark input, .dark textarea, .dark select,
+.block, .form {
+    background-color: transparent !important;
+    border-color: #e5e7eb !important;
+}
+
+/* ---- Header ---- */
+#dashboard-header h1 {
+    font-size: 2.1rem !important;
+    font-weight: 800 !important;
+    color: #111827 !important;
+    margin-bottom: 0 !important;
+}
+#dashboard-subtitle {
+    color: #9ca3af !important;
+    font-size: 0.95rem !important;
+    margin-top: 2px !important;
+}
+
+/* ---- Metric cards (raw HTML) ---- */
+.metric-card {
+    background: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #eef0f2;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.03);
+    padding: 20px 22px;
+    min-height: 118px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    font-family: 'Inter', 'Roboto', system-ui, sans-serif;
+}
+.metric-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #4b5563;
+    margin-bottom: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.metric-value-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+.metric-value {
+    font-size: 2.05rem;
+    font-weight: 800;
+    color: #0f1115;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    max-width: 100%;
+}
+.metric-footer {
+    margin-top: 12px;
+}
+.pill {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.pill-pos {
+    background-color: #dcfce7;
+    color: #15803d;
+}
+.pill-neg {
+    background-color: #fee2e2;
+    color: #b91c1c;
+}
+
+/* ---- Run button styled as the yellow primary action ---- */
+#run-btn {
+    background: linear-gradient(180deg, #fde047, #facc15) !important;
+    color: #1f2937 !important;
+    font-weight: 700 !important;
+    border: none !important;
+    border-radius: 10px !important;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05) !important;
+}
+#run-btn:hover {
+    background: linear-gradient(180deg, #facc15, #eab308) !important;
+}
+
+/* ---- Panels (chart / summary containers) ---- */
+.panel-card {
+    background: #ffffff !important;
+    border-radius: 12px !important;
+    border: 1px solid #eef0f2 !important;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    padding: 18px !important;
+}
+
+/* Textbox styling */
+#smiles-input textarea, #smiles-input input {
+    background: #ffffff !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 10px !important;
+    color: #111827 !important;
+}
+
+/* Summary markdown box text color */
+#summary-box {
+    color: #1f2937 !important;
+}
+#summary-box h1, #summary-box h2, #summary-box h3, #summary-box strong {
+    color: #0f1115 !important;
+}
+"""
+
+# JS that runs on load to strip any dark-mode class Gradio injects.
+FORCE_LIGHT_JS = """
+() => {
+    const strip = () => {
+        document.body.classList.remove('dark');
+        document.documentElement.classList.remove('dark');
+        const app = document.querySelector('gradio-app');
+        if (app) app.classList.remove('dark');
+        const root = document.querySelector('.gradio-container');
+        if (root) root.classList.remove('dark');
+    };
+    strip();
+    // Gradio can re-apply the class after hydration; watch and re-strip.
+    const observer = new MutationObserver(strip);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+}
+"""
+
+
+# ----------------------------------------------------------------------
+# Gradio layout
+# ----------------------------------------------------------------------
+
+with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Base(), title="Arrakis · ADMET Dashboard") as demo:
+
+    with gr.Column(elem_id="dashboard-header"):
+        gr.Markdown("# Overview")
+        gr.HTML('<div id="dashboard-subtitle">SMILES → ADMET predictions across every model · Team Arrakis</div>')
+
+    # ---- Metric cards row ----
+    with gr.Row():
+        card_bbb = gr.HTML(placeholder_cards()[0])
+        card_cyp3a4 = gr.HTML(placeholder_cards()[1])
+        card_herg = gr.HTML(placeholder_cards()[2])
+        card_solubility = gr.HTML(placeholder_cards()[3])
+
+    # ---- Two-column workspace ----
+    with gr.Row():
+        with gr.Column(scale=1, elem_classes="panel-card"):
+            gr.Markdown("### Input")
+            smiles_input = gr.Textbox(
+                label="SMILES String",
+                placeholder="e.g. CC(=O)Oc1ccccc1C(=O)O",
+                elem_id="smiles-input",
+            )
+            run_btn = gr.Button("Run Prediction", elem_id="run-btn")
+            gr.Markdown("### Property Profile")
+            chart_output = gr.Plot(label=None, show_label=False)
+
+        with gr.Column(scale=1, elem_classes="panel-card"):
+            gr.Markdown("### AI Chemist Summary — Gemma-4")
+            summary_output = gr.Markdown(elem_id="summary-box")
+
+    run_btn.click(
+        fn=run_admet_prediction,
+        inputs=[smiles_input],
+        outputs=[card_bbb, card_cyp3a4, card_herg, card_solubility, chart_output, summary_output],
+    )
+
+    demo.load(fn=None, inputs=None, outputs=None, js=FORCE_LIGHT_JS)
+
+
+if __name__ == "__main__":
+    demo.launch()
