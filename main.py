@@ -58,17 +58,31 @@ def main():
         
         active_model_name = endpoint_config['active_model']
         
+        # --- NEW: Dynamic Class Weighting ---
+        if task_type == 'classification':
+            num_negative = np.sum(y_train == 0)
+            num_positive = np.sum(y_train == 1)
+            
+            imbalance_ratio = num_negative / num_positive if num_positive > 0 else 1.0
+            print(f"   [Class Weights] Neg: {num_negative} | Pos: {num_positive} -> scale_pos_weight: {imbalance_ratio:.2f}")
+            
+            # Inject directly into the model's configuration
+            config['models'][active_model_name]['hyperparameters']['scale_pos_weight'] = float(imbalance_ratio)
+            
         # E. OPTUNA BAYESIAN OPTIMIZATION
-        # Only run optimization if XGBoost is the active model
         if config['models'][active_model_name]['algorithm'] == 'xgboost':
             print(f"   Optimizing hyperparameters for {task_type}...")
+            
+            # Fetch the calculated weight (defaults to 1.0 for regression)
+            spw = config['models'][active_model_name]['hyperparameters'].get('scale_pos_weight', 1.0)
+            
             optimizer = HyperparameterOptimizer(
                 task_type=task_type, 
-                random_seed=config['global']['random_seed']
+                random_seed=config['global']['random_seed'],
+                scale_pos_weight=spw  # Pass it to Optuna
             )
-            best_params = optimizer.optimize(X_train, y_train, n_trials=15)
             
-            # Inject best parameters dynamically back into the config for the factory
+            best_params = optimizer.optimize(X_train, y_train, n_trials=15)
             config['models'][active_model_name]['hyperparameters'].update(best_params)
 
         # F. Model Initialization & Training

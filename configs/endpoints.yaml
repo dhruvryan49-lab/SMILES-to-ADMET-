@@ -111,6 +111,7 @@ endpoints:
 
   Half_Life:
     task_type: "regression"
+    target_transform: false
     data:
       provider: "TDC"
       category: "ADME"
@@ -126,3 +127,23 @@ endpoints:
         - "rmse"
         - "r2"
     active_model: "xgb_regressor_baseline"
+
+    Tox21_p53:
+    task_type: "classification"
+    data:
+      provider: "TDC"
+      category: "Tox"
+      dataset_name: "Tox21"
+      label_name: "SR-p53"
+      target_column: "Y" # Targeting the p53 stress response pathway
+    split:
+      method: "scaffold"
+      train_frac: 0.8
+      val_frac: 0.1
+      test_frac: 0.1
+    evaluation:
+      metrics:
+        - "roc_auc"
+        - "auprc"
+        - "accuracy"
+    active_model: "xgb_classifier_baseline"

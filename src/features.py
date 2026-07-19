@@ -1,44 +1,41 @@
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import Descriptors, rdMolDescriptors, AllChem
+from rdkit.Chem import AllChem
+from rdkit.Chem import Descriptors
+from rdkit import DataStructs 
 
 class FeatureExtractor:
-    def __init__(self, config):
-        """
-        Initializes the extractor using parameters from the YAML config.
-        """
-        self.radius = config['features'].get('morgan_radius', 2)
-        # Defaulting to 2048 if not specified to reduce hash collisions
-        self.n_bits = config['features'].get('morgan_nbits', 2048) 
-        self.method = config['features'].get('method', 'morgan_plus_descriptors')
+    def __init__(self, config=None):
+        # We catch the config dictionary passed by main.py so it doesn't overwrite our radius
+        self.radius = 2
+        self.n_bits = 2048
+        # Total length will be 2048 (Morgan) + 8 (Descriptors) = 2056
+        self.total_features = self.n_bits + 8
 
     def extract(self, smiles):
-        """
-        Converts a SMILES string into a 1D numpy array of features.
-        """
         mol = Chem.MolFromSmiles(smiles)
         
         if mol is None:
-            return None
-        
-        # High-resolution Morgan Fingerprints
-        fp = AllChem.GetMorganFingerprintAsBitVect(
-            mol, radius=self.radius, nBits=self.n_bits
-        )
-        fp_array = np.array(fp)
-        
-        if self.method == 'morgan_only':
-            return fp_array
+            # If RDKit cannot parse the SMILES, return a zero vector
+            return np.zeros(self.total_features, dtype=np.float32)
             
-        # Global RDKit Descriptors
-        descriptors = np.array([
-            Descriptors.MolWt(mol),
-            Descriptors.MolLogP(mol),
-            Descriptors.TPSA(mol),
-            rdMolDescriptors.CalcNumHBD(mol),
-            rdMolDescriptors.CalcNumHBA(mol),
-            rdMolDescriptors.CalcNumRotatableBonds(mol),
-            rdMolDescriptors.CalcNumAromaticRings(mol)
-        ])
+        # 1. Morgan Fingerprint (Pre-allocated for memory safety)
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, self.radius, nBits=self.n_bits)
+        fp_array = np.zeros((self.n_bits,), dtype=np.float32)
+        DataStructs.ConvertToNumpyArray(fp, fp_array)
         
-        return np.concatenate((fp_array, descriptors))
+        # 2. RDKit 2D Descriptors (Global Physicochemical Properties)
+        mw = Descriptors.MolWt(mol)
+        logp = Descriptors.MolLogP(mol)
+        tpsa = Descriptors.TPSA(mol)
+        hbd = Descriptors.NumHDonors(mol)
+        hba = Descriptors.NumHAcceptors(mol)
+        rotb = Descriptors.NumRotatableBonds(mol)
+        rings = Descriptors.RingCount(mol)
+        fcsp3 = Descriptors.FractionCSP3(mol) # Ratio of sp3 carbons (3D structure proxy)
+        
+        # Group into a float32 array
+        desc_array = np.array([mw, logp, tpsa, hbd, hba, rotb, rings, fcsp3], dtype=np.float32)
+        
+        # Concatenate local and global features
+        return np.concatenate([fp_array, desc_array])

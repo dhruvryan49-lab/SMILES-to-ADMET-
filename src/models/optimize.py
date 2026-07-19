@@ -3,24 +3,19 @@ from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier, XGBRegressor
 
 class HyperparameterOptimizer:
-    def __init__(self, task_type, random_seed=42):
+    # 1. Added scale_pos_weight to init
+    def __init__(self, task_type, random_seed=42, scale_pos_weight=1.0):
         self.task_type = task_type
         self.random_seed = random_seed
-        # Keep the terminal clean from hundreds of Optuna logs
+        self.scale_pos_weight = scale_pos_weight 
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def optimize(self, X, y, n_trials=15):
-        """
-        Runs Bayesian optimization to find the best hyperparameters,
-        specifically targeting regularization to prevent overfitting.
-        """
         def objective(trial):
-            # The search space for our XGBoost model
             params = {
                 'n_estimators': trial.suggest_int('n_estimators', 50, 250),
                 'max_depth': trial.suggest_int('max_depth', 3, 9),
                 'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.3, log=True),
-                # Crucial for 2048 bits: L1 (Lasso) and L2 (Ridge) Regularization
                 'reg_alpha': trial.suggest_float('reg_alpha', 1e-5, 10.0, log=True), 
                 'reg_lambda': trial.suggest_float('reg_lambda', 1e-5, 10.0, log=True),
                 'random_state': self.random_seed,
@@ -28,13 +23,22 @@ class HyperparameterOptimizer:
             }
 
             if self.task_type == 'classification':
-                model = XGBClassifier(**params, eval_metric='logloss')
+                model = XGBClassifier(
+                    **params, 
+                    scale_pos_weight=self.scale_pos_weight, 
+                    eval_metric='logloss',
+                    tree_method='hist',   # Wakes up GPU optimization
+                    device='cuda'         # Forces it to use the GPU
+                )
                 scoring = 'roc_auc'
             else:
-                model = XGBRegressor(**params)
+                model = XGBRegressor(
+                    **params,
+                    tree_method='hist',   # Wakes up GPU optimization
+                    device='cuda'         # Forces it to use the GPU
+                )
                 scoring = 'neg_root_mean_squared_error'
 
-            # 3-fold cross-validation to ensure the parameters actually generalize
             scores = cross_val_score(model, X, y, cv=3, scoring=scoring)
             return scores.mean()
 

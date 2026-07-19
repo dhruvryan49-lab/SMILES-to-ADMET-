@@ -1,14 +1,51 @@
-```text
-# Python artifacts
+# ==========================================
+# Data and Model Outputs (CRITICAL)
+# ==========================================
+# Ignore raw, cleaned, and downloaded datasets
+data/
+*.csv
+*.tab
+*.gz
+
+# Ignore trained model weights and exported artifacts
+outputs/models/
+*.pt
+*.pth
+*.pkl
+*.xgboost
+
+# Ignore plots and large result logs
+outputs/plots/
+outputs/results/
+
+# ==========================================
+# Python & Cache
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.pytest_cache/
 
-# Data & Models (Keep these local)
-data/
-outputs/models/*.pkl
+# ==========================================
+# Jupyter Notebooks
+# ==========================================
+.ipynb_checkpoints/
 
+# ==========================================
 # Virtual Environments
+# ==========================================
 venv/
 env/
+.venv/
 .env
+
+# ==========================================
+# IDEs and OS-Specific
+# ==========================================
+# Cursor / VS Code settings
+.vscode/
+
+# macOS / Windows background files
+.DS_Store
+Thumbs.db
