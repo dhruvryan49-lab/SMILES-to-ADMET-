@@ -2,8 +2,9 @@
 Team Arrakis — SMILES to ADMET Dashboard
 KGB Thon Hackathon
 
-Production-ready Gradio dashboard styled to match a light-mode SaaS metrics UI.
-Wired up to real XGBoost models and live Gemma-4 API calls.
+Gradio dashboard styled to match a light-mode SaaS metrics UI.
+Backend calls are mocked with random data so the UI can be tested
+independently of the XGBoost / Gemma-4 pipeline.
 """
 
 import gradio as gr
@@ -11,11 +12,15 @@ import numpy as np
 import requests
 import json
 import os
-import pickle
-import matplotlib.pyplot as plt 
 from dotenv import load_dotenv
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Draw, AllChem
+from rdkit.Chem import Descriptors, Draw
+import random
+import matplotlib.pyplot as plt 
+import pickle 
+from rdkit.Chem import AllChem
+
+
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -26,34 +31,12 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://llm.hasanraza.tech/256k/v1/chat/completions"
 
-# ============================================================================
-# GLOBAL MODEL LOADING - Safe Pre-loading on Server Start
-# ============================================================================
-MODELS = {}
-MODEL_PATHS = {
-    "bbb": "models/bbb_model.pkl",
-    "cyp": "models/cyp_model.pkl",
-    "herg": "models/herg_model.pkl",
-    "logs": "models/logs_model.pkl",
-    "bio": "models/bio_model.pkl"
-}
 
-# Pre-load files safely. If files are missing, it falls back to demo mode gracefully.
-USING_MOCK = False
-for key, path in MODEL_PATHS.items():
-    try:
-        with open(path, "rb") as f:
-            MODELS[key] = pickle.load(f)
-    except Exception:
-        USING_MOCK = True
-
-# ============================================================================
-# FEATURE ENGINEERING PIPELINE
-# ============================================================================
 def get_features(smiles: str) -> np.ndarray:
     """Converts SMILES into a 1D feature array for XGBoost."""
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
+        # Return an array of zeros matching your feature count if SMILES is invalid
         return np.zeros((1, 2056)) 
     
     # 1. Morgan Fingerprint (2048 bits)
@@ -69,78 +52,43 @@ def get_features(smiles: str) -> np.ndarray:
         Descriptors.MolMR(mol)
     ]
     
+    # Concatenate and reshape for inference
     return np.concatenate([fp_arr, desc]).reshape(1, -1)
 
-def get_ai_chemist_summary(smiles, bbb, cyp, herg, logs, halflife):
-    """Hits the Gemma endpoint using raw requests to bypass User-Agent blocks."""
-    if not API_KEY:
-        return "AI Chemist Offline. Missing API_KEY in environment variables."
-        
-    prompt = f"""
-    You are an expert Medical Chemist. Analyze this molecule: {smiles}
-    XGBoost Predictions:
-    - BBB Penetration: {bbb}
-    - CYP3A4 Inhibition: {cyp}
-    - hERG Cardiotoxicity: {herg}
-    - Aqueous Solubility (LogS): {logs}
-    - Oral Bioavailability: {halflife}%
-    
-    Provide a brief, 3-sentence clinical viability summary. Be highly technical and concise.
-    """
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    payload = {
-        "model": "gemma-4-31b-it-256k",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 180,
-        "temperature": 0.3
-    }
-    
-    try:
-        response = requests.post(BASE_URL, headers=headers, json=payload, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        return data['choices'][0]['message']['content']
-    except Exception as e:
-        return f"AI Chemist Summary could not be live generated. Error: {str(e)}"
+# ----------------------------------------------------------------------
+# Mock backend
+# ----------------------------------------------------------------------
 
-# ============================================================================
-# LIVE INFERENCE CORE
-# ============================================================================
 def run_admet_prediction(smiles: str):
-    if not smiles or not smiles.strip():
-        smiles = "CCO"
+    """
+    Placeholder for the real pipeline:
+        1. Parse SMILES -> RDKit mol -> features
+        2. Run 5x XGBoost models -> ADMET properties
+        3. Run Gemma-4 -> natural language summary
 
+    Returns mock values so the front-end can be wired up immediately.
+    """
+    if not smiles or not smiles.strip():
+        smiles = "CCO"  # fallback so the demo never breaks
+
+    # --- REAL INFERENCE LOGIC ---
+    # 1. Extract features from the inputted SMILES
     features = get_features(smiles)
     
-    # Run pipeline using real models if found, else deploy stable fallback heuristics
-    if not USING_MOCK:
-        bbb_permeable = bool(MODELS["bbb"].predict(features)[0])
-        cyp3a4_inhibitor = bool(MODELS["cyp"].predict(features)[0])
-        herg_toxic = bool(MODELS["herg"].predict(features)[0])
-        logs = round(float(MODELS["logs"].predict(features)[0]), 2)
-        bioavailability = round(float(MODELS["bio"].predict(features)[0]), 1)
-        layer_caption = "_Generated by Live XGBoost Inference Pipeline & Gemma-4_"
-    else:
-        # Graceful fallback heuristic if `.pkl` files aren't found locally or on server
-        seed = abs(hash(smiles)) % (2**32)
-        rng = np.random.default_rng(seed)
-        mol = Chem.MolFromSmiles(smiles)
-        logp_val = Descriptors.MolLogP(mol) if mol else 2.0
-        mw_val = Descriptors.MolWt(mol) if mol else 300.0
-        
-        bbb_permeable = logp_val > 1.5
-        cyp3a4_inhibitor = mw_val > 350
-        herg_toxic = logp_val > 3.5
-        logs = round(float(-0.5 * logp_val - 0.005 * mw_val + rng.normal(0, 0.4)), 2)
-        bioavailability = round(float(np.clip(80 - 2 * logp_val, 10, 95)), 1)
-        layer_caption = "_Generated by Gemma-4 · Team Arrakis optimized inference layer_"
-
+    # 2. Load your trained models (ensure paths match your directory structure)
+    with open("models/bbb_model.pkl", "rb") as f: bbb_model = pickle.load(f)
+    with open("models/cyp_model.pkl", "rb") as f: cyp_model = pickle.load(f)
+    with open("models/herg_model.pkl", "rb") as f: herg_model = pickle.load(f)
+    with open("models/logs_model.pkl", "rb") as f: logs_model = pickle.load(f)
+    with open("models/bio_model.pkl", "rb") as f: bio_model = pickle.load(f)
+    
+    # 3. Generate predictions
+    bbb_permeable = bool(bbb_model.predict(features)[0])
+    cyp3a4_inhibitor = bool(cyp_model.predict(features)[0])
+    herg_toxic = bool(herg_model.predict(features)[0])
+    
+    logs = round(float(logs_model.predict(features)[0]), 2)
+    bioavailability = round(float(bio_model.predict(features)[0]), 1)
     metrics = {
         "bbb": {
             "title": "Blood-Brain-Barrier",
@@ -168,7 +116,7 @@ def run_admet_prediction(smiles: str):
         },
     }
 
-    # --- Property profile bar chart ---
+    # --- mock chart: simple property radar-ish bar chart ----------------
     fig, ax = plt.subplots(figsize=(5.5, 3.6), dpi=150)
     fig.patch.set_alpha(0)
     ax.set_facecolor("none")
@@ -206,18 +154,27 @@ def run_admet_prediction(smiles: str):
 
     plt.tight_layout()
 
-    # --- Fetch Live Gemma-4 Medical Insights ---
-    summary_md = get_ai_chemist_summary(
-        smiles, 
-        metrics["bbb"]["value"], 
-        metrics["cyp3a4"]["value"], 
-        metrics["herg"]["value"], 
-        metrics["solubility"]["value"], 
-        bioavailability
-    )
-    
-    # Append the layer validation source at the bottom
-    summary_md += f"\n\n{layer_caption}"
+    # --- mock Gemma-4 summary -------------------------------------------
+    summary_lines = [
+        f"**Molecule:** `{smiles}`",
+        "",
+        f"This compound is predicted to be **{'BBB-permeable' if bbb_permeable else 'BBB-impermeable'}**, "
+        f"suggesting {'potential CNS activity — consider off-target neurological effects.' if bbb_permeable else 'primarily peripheral action, favorable for reducing CNS side-effect risk.'}",
+        "",
+        f"It is classified as a **{'CYP3A4 inhibitor' if cyp3a4_inhibitor else 'CYP3A4 non-inhibitor'}**, "
+        f"{'flagging a moderate drug-drug interaction risk with co-administered CYP3A4 substrates.' if cyp3a4_inhibitor else 'indicating a lower likelihood of metabolic drug-drug interactions.'}",
+        "",
+        f"hERG liability is predicted as **{'toxic' if herg_toxic else 'safe'}** "
+        f"({'cardiotoxicity screening recommended before progressing this scaffold.' if herg_toxic else 'no major cardiotoxicity signal detected at this stage.'})",
+        "",
+        f"Aqueous solubility (LogS) is estimated at **{logs:+.2f}**, "
+        f"{'within an acceptable formulation range.' if logs > -4 else 'indicating poor solubility — formulation strategies (e.g. salt forms, nanoparticles) may be required.'}",
+        "",
+        f"Predicted oral bioavailability: **{bioavailability:.1f}%**.",
+        "",
+        "_Generated by Gemma-4 · Team Arrakis mock inference layer_",
+    ]
+    summary_md = "\n".join(summary_lines)
 
     return (
         metric_card_html(metrics["bbb"]),
@@ -228,9 +185,11 @@ def run_admet_prediction(smiles: str):
         summary_md,
     )
 
+
 # ----------------------------------------------------------------------
 # HTML metric card renderer
 # ----------------------------------------------------------------------
+
 def metric_card_html(metric: dict) -> str:
     pill_class = "pill-pos" if metric["positive"] else "pill-neg"
     return f"""
@@ -245,6 +204,7 @@ def metric_card_html(metric: dict) -> str:
     </div>
     """
 
+
 def placeholder_cards():
     placeholders = [
         {"title": "Blood-Brain-Barrier", "value": "—", "delta": "awaiting run", "positive": True},
@@ -254,26 +214,39 @@ def placeholder_cards():
     ]
     return [metric_card_html(p) for p in placeholders]
 
+
 # ----------------------------------------------------------------------
 # CSS — light-mode SaaS dashboard aesthetic
 # ----------------------------------------------------------------------
+
 CUSTOM_CSS = """
+/* ---- Force light mode, everywhere, always ---- */
 html, body, .gradio-container, gradio-app, .dark, .dark body, .dark .gradio-container {
     background-color: #f3f6f8 !important;
     color: #111827 !important;
 }
 .dark { color-scheme: light !important; }
+
 gradio-app::before { content: none !important; }
-* { color-scheme: light !important; }
+
+* {
+    color-scheme: light !important;
+}
+
 .gradio-container {
     max-width: 1280px !important;
     margin: 0 auto !important;
     font-family: 'Inter', 'Roboto', system-ui, -apple-system, sans-serif !important;
 }
-.dark .block, .dark .form, .dark input, .dark textarea, .dark select, .block, .form {
+
+/* Kill Gradio's dark-mode component backgrounds */
+.dark .block, .dark .form, .dark input, .dark textarea, .dark select,
+.block, .form {
     background-color: transparent !important;
     border-color: #e5e7eb !important;
 }
+
+/* ---- Header ---- */
 #dashboard-header h1 {
     font-size: 2.1rem !important;
     font-weight: 800 !important;
@@ -285,6 +258,8 @@ gradio-app::before { content: none !important; }
     font-size: 0.95rem !important;
     margin-top: 2px !important;
 }
+
+/* ---- Metric cards (raw HTML) ---- */
 .metric-card {
     background: #ffffff;
     border-radius: 12px;
@@ -295,6 +270,7 @@ gradio-app::before { content: none !important; }
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    font-family: 'Inter', 'Roboto', system-ui, sans-serif;
 }
 .metric-title {
     font-size: 0.85rem;
@@ -305,9 +281,13 @@ gradio-app::before { content: none !important; }
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.metric-value-row { display: flex; align-items: baseline; gap: 8px; }
+.metric-value-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
 .metric-value {
-    font-size: 1.65rem;
+    font-size: 2.05rem;
     font-weight: 800;
     color: #0f1115;
     line-height: 1.1;
@@ -317,10 +297,27 @@ gradio-app::before { content: none !important; }
     display: block;
     max-width: 100%;
 }
-.metric-footer { margin-top: 12px; }
-.pill { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
-.pill-pos { background-color: #dcfce7; color: #15803d; }
-.pill-neg { background-color: #fee2e2; color: #b91c1c; }
+.metric-footer {
+    margin-top: 12px;
+}
+.pill {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.pill-pos {
+    background-color: #dcfce7;
+    color: #15803d;
+}
+.pill-neg {
+    background-color: #fee2e2;
+    color: #b91c1c;
+}
+
+/* ---- Run button styled as the yellow primary action ---- */
 #run-btn {
     background: linear-gradient(180deg, #fde047, #facc15) !important;
     color: #1f2937 !important;
@@ -329,7 +326,11 @@ gradio-app::before { content: none !important; }
     border-radius: 10px !important;
     box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05) !important;
 }
-#run-btn:hover { background: linear-gradient(180deg, #facc15, #eab308) !important; }
+#run-btn:hover {
+    background: linear-gradient(180deg, #facc15, #eab308) !important;
+}
+
+/* ---- Panels (chart / summary containers) ---- */
 .panel-card {
     background: #ffffff !important;
     border-radius: 12px !important;
@@ -337,16 +338,25 @@ gradio-app::before { content: none !important; }
     box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04) !important;
     padding: 18px !important;
 }
+
+/* Textbox styling */
 #smiles-input textarea, #smiles-input input {
     background: #ffffff !important;
     border: 1px solid #e5e7eb !important;
     border-radius: 10px !important;
     color: #111827 !important;
 }
-#summary-box { color: #1f2937 !important; }
-#summary-box h1, #summary-box h2, #summary-box h3, #summary-box strong { color: #0f1115 !important; }
+
+/* Summary markdown box text color */
+#summary-box {
+    color: #1f2937 !important;
+}
+#summary-box h1, #summary-box h2, #summary-box h3, #summary-box strong {
+    color: #0f1115 !important;
+}
 """
 
+# JS that runs on load to strip any dark-mode class Gradio injects.
 FORCE_LIGHT_JS = """
 () => {
     const strip = () => {
@@ -358,27 +368,32 @@ FORCE_LIGHT_JS = """
         if (root) root.classList.remove('dark');
     };
     strip();
+    // Gradio can re-apply the class after hydration; watch and re-strip.
     const observer = new MutationObserver(strip);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 }
 """
 
-# ============================================================================
-# GRADIO INTERFACE
-# ============================================================================
+
+# ----------------------------------------------------------------------
+# Gradio layout
+# ----------------------------------------------------------------------
+
 with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Base(), title="Arrakis · ADMET Dashboard") as demo:
 
     with gr.Column(elem_id="dashboard-header"):
         gr.Markdown("# Overview")
         gr.HTML('<div id="dashboard-subtitle">SMILES → ADMET predictions across every model · Team Arrakis</div>')
 
+    # ---- Metric cards row ----
     with gr.Row():
         card_bbb = gr.HTML(placeholder_cards()[0])
         card_cyp3a4 = gr.HTML(placeholder_cards()[1])
         card_herg = gr.HTML(placeholder_cards()[2])
         card_solubility = gr.HTML(placeholder_cards()[3])
 
+    # ---- Two-column workspace ----
     with gr.Row():
         with gr.Column(scale=1, elem_classes="panel-card"):
             gr.Markdown("### Input")
@@ -402,6 +417,7 @@ with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Base(), title="Arrakis · ADMET D
     )
 
     demo.load(fn=None, inputs=None, outputs=None, js=FORCE_LIGHT_JS)
+
 
 if __name__ == "__main__":
     demo.launch()
