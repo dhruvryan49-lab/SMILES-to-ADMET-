@@ -1,5 +1,7 @@
 # ADMET-GATv2: Hybrid Graph Attention Networks for Molecular Affinity
 
+[Live Demo](https://smiles-to-admet-1.onrender.com)
+
 A complete, end-to-end machine learning pipeline for molecular property prediction and drug-target affinity modeling. This project evolves from classical machine learning baselines (XGBoost) into a custom PyTorch Geometric deep learning architecture, combining multi-head graph attention with deterministic thermodynamic descriptors.
 
 ## 🏗️ Architecture: The Hybrid GATv2
